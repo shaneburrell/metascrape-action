@@ -1,0 +1,143 @@
+name: 'MetaScrape OG Tag Validator'
+description: 'Validate Open Graph and Twitter Card meta tags on your website using the MetaScrape API'
+author: 'Shane Code'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  urls:
+    description: 'Newline-separated list of URLs to validate'
+    required: true
+  api-key:
+    description: 'MetaScrape API key (get one free at metascrape.shanecode.org)'
+    required: true
+  require-og-title:
+    description: 'Fail if og:title is missing'
+    default: 'true'
+  require-og-description:
+    description: 'Fail if og:description is missing'
+    default: 'true'
+  require-og-image:
+    description: 'Fail if og:image is missing'
+    default: 'true'
+  require-twitter-card:
+    description: 'Fail if twitter:card is missing'
+    default: 'false'
+  require-favicon:
+    description: 'Fail if favicon is missing'
+    default: 'false'
+
+outputs:
+  results:
+    description: 'JSON array of validation results'
+    value: ${{ steps.validate.outputs.results }}
+  passed:
+    description: 'Whether all URLs passed validation'
+    value: ${{ steps.validate.outputs.passed }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate OG tags
+      id: validate
+      shell: bash
+      env:
+        INPUT_URLS: ${{ inputs.urls }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_REQUIRE_OG_TITLE: ${{ inputs.require-og-title }}
+        INPUT_REQUIRE_OG_DESCRIPTION: ${{ inputs.require-og-description }}
+        INPUT_REQUIRE_OG_IMAGE: ${{ inputs.require-og-image }}
+        INPUT_REQUIRE_TWITTER_CARD: ${{ inputs.require-twitter-card }}
+        INPUT_REQUIRE_FAVICON: ${{ inputs.require-favicon }}
+      run: |
+        PASSED=true
+        RESULTS="[]"
+        FAIL_COUNT=0
+        PASS_COUNT=0
+
+        while IFS= read -r url; do
+          # Skip empty lines
+          [ -z "$url" ] && continue
+          url=$(echo "$url" | xargs)
+          [ -z "$url" ] && continue
+
+          echo "::group::Checking $url"
+
+          # Call MetaScrape API
+          RESPONSE=$(curl -sf "https://api.shanecode.org/v1/extract?url=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$url', safe=''))")" \
+            -H "X-API-Key: $INPUT_API_KEY" 2>&1) || {
+            echo "::error::Failed to fetch metadata for $url"
+            PASSED=false
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "::endgroup::"
+            continue
+          }
+
+          # Parse fields
+          TITLE=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}); print(d.get('title',''))" 2>/dev/null)
+          OG_TITLE=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}).get('og',{}); print(d.get('title',''))" 2>/dev/null)
+          OG_DESC=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}).get('og',{}); print(d.get('description',''))" 2>/dev/null)
+          OG_IMAGE=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}).get('og',{}); print(d.get('image',''))" 2>/dev/null)
+          TW_CARD=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}).get('twitter',{}); print(d.get('card',''))" 2>/dev/null)
+          FAVICON=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}); print(d.get('favicon',''))" 2>/dev/null)
+
+          URL_PASSED=true
+
+          # Check required fields
+          if [ "$INPUT_REQUIRE_OG_TITLE" = "true" ] && [ -z "$OG_TITLE" ]; then
+            echo "::warning file=og-tags::$url — missing og:title"
+            URL_PASSED=false
+          fi
+
+          if [ "$INPUT_REQUIRE_OG_DESCRIPTION" = "true" ] && [ -z "$OG_DESC" ]; then
+            echo "::warning file=og-tags::$url — missing og:description"
+            URL_PASSED=false
+          fi
+
+          if [ "$INPUT_REQUIRE_OG_IMAGE" = "true" ] && [ -z "$OG_IMAGE" ]; then
+            echo "::warning file=og-tags::$url — missing og:image"
+            URL_PASSED=false
+          fi
+
+          if [ "$INPUT_REQUIRE_TWITTER_CARD" = "true" ] && [ -z "$TW_CARD" ]; then
+            echo "::warning file=og-tags::$url — missing twitter:card"
+            URL_PASSED=false
+          fi
+
+          if [ "$INPUT_REQUIRE_FAVICON" = "true" ] && [ -z "$FAVICON" ]; then
+            echo "::warning file=og-tags::$url — missing favicon"
+            URL_PASSED=false
+          fi
+
+          if [ "$URL_PASSED" = "true" ]; then
+            echo "✅ $url — all checks passed"
+            PASS_COUNT=$((PASS_COUNT + 1))
+          else
+            PASSED=false
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+          fi
+
+          # Print summary
+          echo "  title:       ${TITLE:-(empty)}"
+          echo "  og:title:    ${OG_TITLE:-(empty)}"
+          echo "  og:desc:     ${OG_DESC:-(empty)}"
+          echo "  og:image:    ${OG_IMAGE:-(empty)}"
+          echo "  twitter:     ${TW_CARD:-(empty)}"
+          echo "  favicon:     ${FAVICON:-(empty)}"
+
+          echo "::endgroup::"
+        done <<< "$INPUT_URLS"
+
+        echo ""
+        echo "================================"
+        echo "Results: $PASS_COUNT passed, $FAIL_COUNT failed"
+        echo "================================"
+
+        echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+
+        if [ "$PASSED" = "false" ]; then
+          echo "::error::OG tag validation failed for $FAIL_COUNT URL(s)"
+          exit 1
+        fi
