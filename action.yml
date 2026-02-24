@@ -84,6 +84,7 @@ runs:
           FAVICON=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',{}); print(d.get('favicon',''))" 2>/dev/null)
 
           URL_PASSED=true
+          URL_RESULT="{\"url\":\"$url\""
 
           # Check required fields
           if [ "$INPUT_REQUIRE_OG_TITLE" = "true" ] && [ -z "$OG_TITLE" ]; then
@@ -111,12 +112,23 @@ runs:
             URL_PASSED=false
           fi
 
+          URL_RESULT="$URL_RESULT,\"og_title\":\"$OG_TITLE\",\"og_description\":\"$OG_DESC\",\"og_image\":\"$OG_IMAGE\",\"twitter_card\":\"$TW_CARD\",\"favicon\":\"$FAVICON\""
+
           if [ "$URL_PASSED" = "true" ]; then
             echo "✅ $url — all checks passed"
             PASS_COUNT=$((PASS_COUNT + 1))
+            URL_RESULT="$URL_RESULT,\"passed\":true}"
           else
             PASSED=false
             FAIL_COUNT=$((FAIL_COUNT + 1))
+            URL_RESULT="$URL_RESULT,\"passed\":false}"
+          fi
+
+          # Append to results array
+          if [ "$RESULTS" = "[]" ]; then
+            RESULTS="[$URL_RESULT]"
+          else
+            RESULTS="${RESULTS%]},$URL_RESULT]"
           fi
 
           # Print summary
@@ -136,6 +148,7 @@ runs:
         echo "================================"
 
         echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+        echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
 
         if [ "$PASSED" = "false" ]; then
           echo "::error::OG tag validation failed for $FAIL_COUNT URL(s)"
